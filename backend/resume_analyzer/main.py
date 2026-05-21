@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from typing import List, Optional
 
 import uvicorn
+import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -39,6 +40,37 @@ analyzer: Optional[ResumeAnalyzer] = None
 job_engine: Optional[JobRecommendationEngine] = None
 predictor: Optional[SelectionPredictor] = None
 readiness: Optional[PlacementReadinessEngine] = None
+def convert_numpy(obj):
+    """
+    Recursively convert NumPy/scikit-learn values
+    into JSON-safe Python values.
+    """
+
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+
+    if isinstance(obj, np.integer):
+        return int(obj)
+
+    if isinstance(obj, np.floating):
+        return float(obj)
+
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+
+    if isinstance(obj, dict):
+        return {
+            k: convert_numpy(v)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, list):
+        return [
+            convert_numpy(v)
+            for v in obj
+        ]
+
+    return obj
 
 
 @asynccontextmanager
@@ -313,6 +345,8 @@ def _run_readiness_pipeline(
         model_choice=model_choice,
     )
 
+    prediction = convert_numpy(prediction)
+
     readiness_result = readiness.compute_from_pipeline(
         resume_analysis=resume_result,
         job_recommendations=job_result,
@@ -322,6 +356,8 @@ def _run_readiness_pipeline(
         has_backlogs=has_backlogs,
         mock_test_score=mock_test_score,
     )
+
+    readiness_result = convert_numpy(readiness_result)
 
     total_ms = round((time.time() - start_time) * 1000, 2)
     return _format_readiness_pipeline_response(
@@ -647,7 +683,13 @@ async def predict_selection(request: PredictRequest):
             branch=request.branch,
             model_choice=request.model_choice,
         )
-        result["processing_time_ms"] = round((time.time() - start_time) * 1000, 2)
+    
+        result["processing_time_ms"] = round(
+            (time.time() - start_time) * 1000,
+            2
+        )
+        result = convert_numpy(result)
+
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
@@ -683,6 +725,8 @@ async def predict_from_resume(request: FullPipelineRequest):
             has_backlogs=request.has_backlogs,
             model_choice=request.model_choice,
         )
+
+        prediction = convert_numpy(prediction)
 
         return {
             "success": True,
@@ -757,6 +801,8 @@ async def predict_from_file(
             has_backlogs=has_backlogs,
             model_choice=model_choice,
         )
+
+        prediction = convert_numpy(prediction)
         return {
             "success": True,
             "processing_time_ms": round((time.time() - start_time) * 1000, 2),
